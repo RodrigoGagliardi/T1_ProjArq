@@ -1,0 +1,28 @@
+# aplicacao de integracao
+integration/node_modules/
+integration/dist/
+integration/data/
+integration/.env
+
+# moodle
+moodle/.env
+
+# latex (o PDF final e um entregavel e fica versionado, so os arquivos auxiliares de build sao ignorados)
+report/*.aux
+report/*.bbl
+report/*.bcf
+report/*.blg
+report/*.fdb_latexmk
+report/*.fls
+report/*.lof
+report/*.log
+report/*.lot
+report/*.out
+report/*.run.xml
+report/*.toc
+report/*.synctex.gz
+
+# diversos
+.DS_Store
+Thumbs.db
+.claude/

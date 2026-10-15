@@ -1,0 +1,76 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\LegacyInstitution;
+use App\Services\MenuCacheService;
+use Illuminate\Contracts\Config\Repository;
+use Illuminate\Http\Request;
+
+class WebController extends Controller
+{
+    public function user(Request $request)
+    {
+        return $request->user()->load('type');
+    }
+
+    public function authorization(Request $request)
+    {
+        return $request->user()->processes->map(function ($process) {
+            $ability = $process->process;
+
+            $data = [];
+
+            if ($process->pivot->visualiza) {
+                $data[] = "view:$ability";
+            }
+
+            if ($process->pivot->cadastra) {
+                $data[] = "modify:$ability";
+            }
+
+            if ($process->pivot->exclui) {
+                $data[] = "remove:$ability";
+            }
+
+            return $data;
+        })->flatten();
+    }
+
+    public function menus(MenuCacheService $menus, Request $request)
+    {
+        return $menus->getMenuByUser($request->user());
+    }
+
+    public function config(Repository $config)
+    {
+        return [
+            'footer' => $config->get('legacy.config.ieducar_internal_footer'),
+        ];
+    }
+
+    public function institution()
+    {
+        $institution = app(LegacyInstitution::class);
+
+        return [
+            'name' => $institution->nm_instituicao,
+            'logo' => config('legacy.report.logo_file_name'),
+            'city' => $institution->cidade . '/' . $institution->ref_sigla_uf,
+        ];
+    }
+
+    public function fallback($uri)
+    {
+        if (str_starts_with($uri, 'web')) {
+            return redirect('intranet/educar_index.php');
+        }
+
+        return abort(404);
+    }
+
+    public function home()
+    {
+        return redirect(config('app.home'));
+    }
+}

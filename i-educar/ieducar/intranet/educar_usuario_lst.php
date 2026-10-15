@@ -1,0 +1,209 @@
+<?php
+
+use App\Models\LegacyEmployee;
+use App\Models\LegacyUserType;
+use App\User;
+use Illuminate\Support\Facades\Auth;
+
+return new class extends clsListagem
+{
+    public function Gerar()
+    {
+        $this->titulo = 'Usuários';
+
+        foreach ($_GET as $var => $val) { // passa todos os valores obtidos no GET para atributos do objeto
+            $this->$var = ($val === '') ? null : $val;
+        }
+
+        $this->addCabecalhos(coluna: ['Nome', 'Matrícula', 'Matrícula Interna', 'Status', 'Tipo usuário', 'Nível de Acesso']);
+
+        // Filtros de Busca
+        $this->campoTexto(nome: 'nm_pessoa', campo: 'Nome', valor: $this->nm_pessoa, tamanhovisivel: 42, tamanhomaximo: 255);
+        $this->campoTexto(nome: 'matricula', campo: 'Matrícula', valor: $this->matricula, tamanhovisivel: 20, tamanhomaximo: 15);
+        $this->campoTexto(nome: 'matricula_interna', campo: 'Matrícula Interna', valor: $this->matricula_interna, tamanhovisivel: 20, tamanhomaximo: 30);
+
+        $opcoes = ['' => 'Selecione'];
+
+        $lista = LegacyUserType::query()
+            ->active()
+            ->orderBy('nm_tipo')
+            ->get(['cod_tipo_usuario', 'nm_tipo']);
+
+        foreach ($lista as $registro) {
+            $opcoes["{$registro['cod_tipo_usuario']}"] = "{$registro['nm_tipo']}";
+        }
+
+        $this->campoLista(nome: 'ref_cod_tipo_usuario', campo: 'Tipo Usuário', valor: $opcoes, default: $this->ref_cod_tipo_usuario, acao: null, duplo: null, descricao: null, complemento: null, desabilitado: null, obrigatorio: false);
+
+        // filtro de nivel de acesso
+        $nivelUsuario = LegacyUserType::query()
+            ->whereHas('users', fn ($q) => $q->whereKey($this->pessoa_logada))
+            ->value('nivel');
+
+        /** @var User $user */
+        $user = Auth::user();
+
+        $opcoes = match (true) {
+            $user->isAdmin() => [
+                '' => 'Selecione',
+                LegacyUserType::LEVEL_ADMIN => 'Poli-Institucional',
+                LegacyUserType::LEVEL_INSTITUTIONAL => 'Institucional',
+                LegacyUserType::LEVEL_SCHOOLING => 'Escolar',
+                LegacyUserType::LEVEL_LIBRARY => 'Biblioteca',
+            ],
+            $nivelUsuario == LegacyUserType::LEVEL_ADMIN => [
+                '' => 'Selecione',
+                LegacyUserType::LEVEL_INSTITUTIONAL => 'Institucional',
+                LegacyUserType::LEVEL_SCHOOLING => 'Escolar',
+                LegacyUserType::LEVEL_LIBRARY => 'Biblioteca',
+            ],
+            $nivelUsuario == LegacyUserType::LEVEL_INSTITUTIONAL => [
+                '' => 'Selecione',
+                LegacyUserType::LEVEL_SCHOOLING => 'Escolar',
+                LegacyUserType::LEVEL_LIBRARY => 'Biblioteca',
+            ],
+            $nivelUsuario == LegacyUserType::LEVEL_SCHOOLING => [
+                '' => 'Selecione',
+                LegacyUserType::LEVEL_LIBRARY => 'Biblioteca',
+            ],
+            default => $opcoes,
+        };
+        $this->campoLista(nome: 'ref_cod_nivel_usuario', campo: 'Nível de Acesso', valor: $opcoes, default: $this->ref_cod_nivel_usuario, acao: null, duplo: null, descricao: null, complemento: null, desabilitado: null, obrigatorio: false);
+
+        $this->inputsHelper()->dynamic(helperNames: 'instituicao', inputOptions: ['required' => false, 'show-select' => true, 'value' => $this->ref_cod_instituicao]);
+        $this->inputsHelper()->dynamic(helperNames: 'escola', inputOptions: ['required' => false, 'show-select' => true, 'value' => $this->ref_cod_escola]);
+        $selectOptions = [
+            0 => 'Selecione',
+            1 => 'Inativo',
+            2 => 'Ativo',
+        ];
+
+        $options = [
+            'required' => false,
+            'label' => 'Status',
+            'value' => $this->int_ativo,
+            'resources' => $selectOptions,
+        ];
+
+        $this->inputsHelper()->select(attrName: 'int_ativo', inputOptions: $options);
+        // gambiarra pois o inputsHelper está bugado
+        switch ($this->int_ativo) {
+            case 0:
+                $this->int_ativo = null;
+                break;
+            case 1:
+                $this->int_ativo = 0;
+                break;
+            case 2:
+                $this->int_ativo = 1;
+                break;
+        }
+        // Paginador
+        $limite = 10;
+        $iniciolimit = ($_GET["pagina_{$this->nome}"]) ? $_GET["pagina_{$this->nome}"] * $limite - $limite : 0;
+
+        $strMatricula = $_GET['matricula'] ?? null;
+        $strNome = $_GET['nm_pessoa'] ?? null;
+        $strMatriculaInterna = $_GET['matricula_interna'] ?? null;
+
+        $query = LegacyEmployee::query()
+            ->join('cadastro.pessoa', 'cadastro.pessoa.idpes', 'portal.funcionario.ref_cod_pessoa_fj')
+            ->leftJoin('pmieducar.usuario', 'pmieducar.usuario.cod_usuario', 'portal.funcionario.ref_cod_pessoa_fj')
+            ->leftJoin('pmieducar.tipo_usuario', 'pmieducar.tipo_usuario.cod_tipo_usuario', 'pmieducar.usuario.ref_cod_tipo_usuario')
+            ->leftJoin('pmieducar.escola_usuario', 'pmieducar.escola_usuario.ref_cod_usuario', 'pmieducar.usuario.cod_usuario')
+            ->select([
+                'portal.funcionario.ref_cod_pessoa_fj',
+                'cadastro.pessoa.nome',
+                'portal.funcionario.matricula',
+                'portal.funcionario.matricula_interna',
+                'portal.funcionario.ativo',
+                'pmieducar.tipo_usuario.nm_tipo',
+                'pmieducar.tipo_usuario.nivel',
+            ])
+            ->distinct()
+            ->orderBy('cadastro.pessoa.nome');
+
+        if (is_string($strMatricula) && $strMatricula !== '') {
+            $query->where('portal.funcionario.matricula', 'like', "%{$strMatricula}%");
+        }
+
+        if (is_string($strMatriculaInterna) && $strMatriculaInterna !== '') {
+            $query->where('portal.funcionario.matricula_interna', 'like', "%{$strMatriculaInterna}%");
+        }
+
+        if (is_string($strNome)) {
+            $query->whereRaw('f_unaccent(cadastro.pessoa.nome) ILIKE f_unaccent(?)', ["%{$strNome}%"]);
+        }
+
+        if (is_numeric($this->ref_cod_escola)) {
+            $query->where('pmieducar.escola_usuario.ref_cod_escola', $this->ref_cod_escola);
+        }
+
+        if (is_numeric($this->ref_cod_instituicao)) {
+            $query->where('pmieducar.usuario.ref_cod_instituicao', $this->ref_cod_instituicao);
+        }
+
+        if (is_numeric($this->ref_cod_tipo_usuario)) {
+            $query->where('pmieducar.usuario.ref_cod_tipo_usuario', $this->ref_cod_tipo_usuario);
+        }
+
+        if (is_numeric($this->ref_cod_nivel_usuario)) {
+            $query->where('pmieducar.tipo_usuario.nivel', $this->ref_cod_nivel_usuario);
+        }
+
+        if (is_numeric($this->int_ativo)) {
+            $query->where('portal.funcionario.ativo', $this->int_ativo);
+            $query->where('pmieducar.usuario.ativo', $this->int_ativo);
+        }
+
+        $total = (clone $query)->count();
+        $lst_func = $query->offset($iniciolimit)->limit($limite)->get();
+
+        if ($lst_func->isNotEmpty()) {
+            foreach ($lst_func as $pessoa) {
+                $ativo = ($pessoa['ativo'] == '1') ? 'Ativo' : 'Inativo';
+
+                if ($pessoa['nivel'] == 1) {
+                    $nivel = 'Poli-Institucional';
+                } elseif ($pessoa['nivel'] == 2) {
+                    $nivel = 'Institucional';
+                } elseif ($pessoa['nivel'] == 4) {
+                    $nivel = 'Escolar';
+                } elseif ($pessoa['nivel'] == 8) {
+                    $nivel = 'Biblioteca';
+                } else {
+                    $nivel = '';
+                }
+
+                $this->addLinhas(linha: [
+                    "<a href='educar_usuario_det.php?ref_pessoa={$pessoa['ref_cod_pessoa_fj']}'><img src='imagens/noticia.jpg' border=0>{$pessoa['nome']}</a>",
+                    "<a href='educar_usuario_det.php?ref_pessoa={$pessoa['ref_cod_pessoa_fj']}'>{$pessoa['matricula']}</a>",
+                    "<a href='educar_usuario_det.php?ref_pessoa={$pessoa['ref_cod_pessoa_fj']}'>{$pessoa['matricula_interna']}</a>",
+                    "<a href='educar_usuario_det.php?ref_pessoa={$pessoa['ref_cod_pessoa_fj']}'>{$ativo}</a>",
+                    "<a href='educar_usuario_det.php?ref_pessoa={$pessoa['ref_cod_pessoa_fj']}'>{$pessoa['nm_tipo']}</a>",
+                    "<a href='educar_usuario_det.php?ref_pessoa={$pessoa['ref_cod_pessoa_fj']}'>{$nivel}</a>",
+                ]);
+            }
+        }
+
+        $this->addPaginador2(strUrl: 'educar_usuario_lst.php', intTotalRegistros: $total, mixVariaveisMantidas: $_GET, nome: $this->nome, intResultadosPorPagina: $limite);
+
+        $obj_permissao = new clsPermissoes;
+        if ($obj_permissao->permissao_cadastra(int_processo_ap: 555, int_idpes_usuario: $this->pessoa_logada, int_soma_nivel_acesso: 7, super_usuario: true)) {
+            $this->acao = 'go("educar_usuario_cad.php")';
+            $this->nome_acao = 'Novo';
+        }
+
+        $this->largura = '100%';
+
+        $this->breadcrumb(currentPage: 'Usuários', breadcrumbs: [
+            url(path: 'intranet/educar_configuracoes_index.php') => 'Configurações',
+        ]);
+    }
+
+    public function Formular()
+    {
+        $this->title = 'Usuários';
+        $this->processoAp = '555';
+    }
+};

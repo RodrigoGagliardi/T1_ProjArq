@@ -1,0 +1,31 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+/**
+ * @property array<int, string> $fillable
+ */
+class FileRelation extends Model
+{
+    public const TYPE_MEDICAL_REPORT = 'laudo';
+
+    protected $table = 'public.files_relations';
+
+    protected $fillable = [
+        'relation_type',
+        'relation_id',
+        'file_id',
+        'type',
+    ];
+
+    /**
+     * @return BelongsTo<File, $this>
+     */
+    public function file(): BelongsTo
+    {
+        return $this->belongsTo(File::class, 'file_id');
+    }
+}

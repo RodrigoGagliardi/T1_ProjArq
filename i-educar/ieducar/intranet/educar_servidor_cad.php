@@ -1,0 +1,1272 @@
+<?php
+
+use App\Events\EmployeeCreated;
+use App\Models\Employee;
+use App\Models\EmployeeGraduation;
+use App\Models\EmployeePosgraduate;
+use App\Models\LegacyAbsenceDelay;
+use App\Models\LegacyDeficiency;
+use App\Models\LegacyEmployeeRole;
+use App\Models\LegacyIndividual;
+use App\Models\LegacyPerson;
+use App\Models\LegacyRole;
+use App\Models\LegacySchoolingDegree;
+use App\Services\EmployeeGraduationService;
+use App\Services\EmployeePosgraduateService;
+use App\Support\View\SearchParameters;
+use iEducar\Modules\Educacenso\Model\AreaPosGraduacao;
+use iEducar\Modules\Educacenso\Model\Escolaridade;
+use iEducar\Modules\Educacenso\Model\FormacaoContinuada;
+use iEducar\Modules\Educacenso\Model\PosGraduacao;
+use iEducar\Modules\ValueObjects\EmployeeGraduationValueObject;
+use iEducar\Modules\ValueObjects\EmployeePosgraduateValueObject;
+use iEducar\Support\View\SelectOptions;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Session;
+
+return new class extends clsCadastro
+{
+    public $pessoa_logada;
+
+    public $cod_servidor;
+
+    public $ref_cod_instituicao;
+
+    public $ref_idesco;
+
+    public $ref_cod_funcao = [];
+
+    public $carga_horaria;
+
+    public $data_cadastro;
+
+    public $data_exclusao;
+
+    public $ativo;
+
+    public $ref_cod_instituicao_original;
+
+    public $curso_formacao_continuada;
+
+    public $complementacao_pedagogica;
+
+    public $multi_seriado;
+
+    public $tipo_ensino_medio_cursado;
+
+    public $matricula = [];
+
+    public $cod_servidor_funcao = [];
+
+    public $total_horas_alocadas;
+
+    public $cod_docente_inep;
+
+    public $docente = false;
+
+    public $employee_course_id;
+
+    public $employee_completion_year;
+
+    public $employee_college_id;
+
+    public function Inicializar()
+    {
+        $retorno = 'Novo';
+
+        $this->cod_servidor = $this->getQueryString('cod_servidor');
+        $this->ref_cod_instituicao = $this->getQueryString('ref_cod_instituicao');
+        $this->ref_cod_instituicao_original = $this->getQueryString('ref_cod_instituicao');
+
+        if ($_POST['ref_cod_instituicao_original']) {
+            $this->ref_cod_instituicao_original = $_POST['ref_cod_instituicao_original'];
+        }
+
+        $obj_permissoes = new clsPermissoes;
+        $obj_permissoes->permissao_cadastra(
+            635,
+            $this->pessoa_logada,
+            7,
+            'educar_servidor_lst.php'
+        );
+        if (is_numeric($this->cod_servidor) && is_numeric($this->ref_cod_instituicao)) {
+            $servidor = Employee::query()
+                ->whereEmployee($this->cod_servidor)
+                ->whereInstitution($this->ref_cod_instituicao)
+                ->first([
+                    'cod_servidor',
+                    'ref_idesco',
+                    'carga_horaria',
+                    'data_cadastro',
+                    'data_exclusao',
+                    'ativo',
+                    'ref_cod_instituicao',
+                    'pos_graduacao',
+                    'curso_formacao_continuada',
+                    'multi_seriado',
+                    'tipo_ensino_medio_cursado',
+                    'complementacao_pedagogica',
+                ]);
+
+            $registro = $servidor ? $servidor->getAttributes() : [];
+
+            if (empty($registro)) {
+                $this->simpleRedirect(url('intranet/educar_servidor_lst.php'));
+            }
+
+            if ($registro) {
+                // passa todos os valores obtidos no registro para atributos do objeto
+                foreach ($registro as $campo => $val) {
+                    $this->$campo = $val;
+                }
+
+                $this->multi_seriado = dbBool($this->multi_seriado);
+
+                $obj_permissoes = new clsPermissoes;
+                if ($obj_permissoes->permissao_excluir(635, $this->pessoa_logada, 7)) {
+                    $this->fexcluir = true;
+                }
+
+                $db = new clsBanco;
+
+                // Carga horária alocada no ultimo ano de alocação
+                $sql = sprintf(
+                    '
+                    SELECT
+                        SUM(extract(hours from carga_horaria::interval))
+                    FROM
+                        pmieducar.servidor_alocacao
+                    WHERE
+                        ref_cod_servidor = %d AND
+                        ativo = 1
+                        AND ano = %d
+                        AND (data_saida > now() or data_saida is null)',
+                    $this->cod_servidor,
+                    $this->ano ?: date('Y')
+                );
+
+                $db->Consulta($sql);
+                while ($db->ProximoRegistro()) {
+                    $cargaHoraria = $db->Tupla();
+                    $cargaHoraria = $cargaHoraria['sum'];
+                }
+
+                $this->total_horas_alocadas = str_pad($cargaHoraria, 2, 0, STR_PAD_LEFT);
+
+                // Funções
+                $lst_funcoes = LegacyEmployeeRole::query()
+                    ->when(is_numeric($this->ref_cod_instituicao), fn ($q) => $q->whereInstitution($this->ref_cod_instituicao))
+                    ->when(is_numeric($this->cod_servidor), fn ($q) => $q->whereEmployee($this->cod_servidor))
+                    ->with('role')
+                    ->get(['cod_servidor_funcao', 'ref_cod_funcao', 'matricula']);
+
+                if ($lst_funcoes->isNotEmpty()) {
+                    foreach ($lst_funcoes as $funcao) {
+                        $det_funcao = $funcao->role?->getAttributes();
+
+                        $this->ref_cod_funcao[] = [$funcao['ref_cod_funcao'] . '-' . $det_funcao['professor'], null, null, $funcao['matricula'], $funcao['cod_servidor_funcao']];
+
+                        if ($this->docente == false && (bool) $det_funcao['professor']) {
+                            $this->docente = true;
+                        }
+                    }
+                }
+                $employee = Employee::find($this->cod_servidor, ['cod_servidor']);
+                $lst_servidor_disciplina = $employee->disciplines()->wherePivot('ref_ref_cod_instituicao', $this->ref_cod_instituicao)->get(['id']);
+
+                Session::forget("servant:{$this->cod_servidor}");
+
+                if ($lst_servidor_disciplina->isNotEmpty()) {
+                    foreach ($lst_servidor_disciplina as $disciplina) {
+                        $funcoes[$disciplina->pivot->ref_cod_funcao][$disciplina->pivot->ref_cod_curso][] = $disciplina->id;
+                    }
+
+                    // Armazena na sessão para permitir a alteração via modal
+                    Session::put("servant:{$this->cod_servidor}", $funcoes);
+                }
+
+                if (is_string($this->curso_formacao_continuada)) {
+                    $this->curso_formacao_continuada = transformStringFromDBInArray($this->curso_formacao_continuada);
+                }
+
+                if (is_string($this->complementacao_pedagogica)) {
+                    $this->complementacao_pedagogica = transformStringFromDBInArray($this->complementacao_pedagogica);
+                }
+
+                $retorno = 'Editar';
+            }
+        }
+
+        // remove dados que podem estar na session de outras consultas
+        Session::forget('cursos_por_funcao');
+
+        $this->url_cancelar = ($retorno == 'Editar') ?
+            "educar_servidor_det.php?cod_servidor={$this->cod_servidor}&ref_cod_instituicao={$this->ref_cod_instituicao}" :
+            'educar_servidor_lst.php';
+
+        $this->nome_url_cancelar = 'Cancelar';
+
+        $this->breadcrumb('Funções do servidor', [
+            url('intranet/educar_servidores_index.php') => 'Servidores',
+        ]);
+
+        return $retorno;
+    }
+
+    /**
+     * Gerar formulário
+     */
+    public function Gerar()
+    {
+        // Foreign keys
+        $obrigatorio = true;
+        $get_instituicao = true;
+        include 'include/pmieducar/educar_campo_lista.php';
+
+        $obrigarCamposCenso = $this->validarCamposObrigatoriosCenso();
+        $this->campoOculto('obrigar_campos_censo', (int) $obrigarCamposCenso);
+
+        /**
+         * Selecionar funcionário,
+         * Escolher a pessoa (não o usuário)
+         */
+        $opcoes = ['' => 'Para procurar, clique na lupa ao lado.'];
+        if ($this->cod_servidor) {
+            $this->campoRotulo('nm_servidor', 'Pessoa', LegacyPerson::whereKey($this->cod_servidor)->value('nome'));
+            $this->campoOculto('cod_servidor', $this->cod_servidor);
+            $this->campoOculto(
+                'ref_cod_instituicao_original',
+                $this->ref_cod_instituicao_original
+            );
+        } else {
+            $parametros = new SearchParameters;
+            $parametros->setSubmit(0);
+            $parametros->adicionaCampoSelect(
+                'cod_servidor',
+                'idpes',
+                'nome'
+            );
+
+            // Configurações do campo de pesquisa
+            $this->campoListaPesq(
+                'cod_servidor',
+                'Pessoa',
+                $opcoes,
+                $this->cod_servidor,
+                'pesquisa_pessoa_lst.php',
+                '',
+                false,
+                '',
+                '',
+                null,
+                null,
+                '',
+                false,
+                $parametros->serializaCampos(),
+                true
+            );
+        }
+
+        $this->inputsHelper()->integer(
+            'cod_docente_inep',
+            [
+                'label' => 'Código INEP',
+                'required' => false,
+                'label_hint' => 'Somente números',
+                'max_length' => 12,
+                'placeholder' => 'INEP',
+            ]
+        );
+
+        $helperOptions = ['objectName' => 'deficiencias'];
+        $options = [
+            'label' => 'Deficiências',
+            'size' => 50,
+            'required' => false,
+            'options' => ['value' => null],
+        ];
+
+        $this->inputsHelper()->multipleSearchDeficiencias(
+            '',
+            $options,
+            $helperOptions
+        );
+
+        $opcoes = ['' => 'Selecione'];
+
+        if (is_numeric($this->ref_cod_instituicao)) {
+            $lista = LegacyRole::query()
+                ->where('ativo', 1)
+                ->orderBy('nm_funcao', 'ASC')
+                ->get();
+
+            foreach ($lista as $registro) {
+                $opcoes[$registro['cod_funcao'] . '-' . $registro['professor']] = $registro['nm_funcao'];
+            }
+
+        }
+
+        $this->campoTabelaInicio(
+            'funcao',
+            'Funções Servidor',
+            [
+                'Função',
+                'Componentes Curriculares',
+                'Cursos',
+                'Matrícula'],
+            ($this->ref_cod_funcao)
+        );
+
+        $funcao = 'popless(this)';
+
+        $this->campoLista('ref_cod_funcao', 'Função', $opcoes, $this->ref_cod_funcao, 'funcaoChange(this)', '', '', '');
+
+        $this->campoRotulo(
+            'disciplina',
+            'Componentes Curriculares',
+            "<img src='imagens/lupa_antiga.png' border='0' style='cursor:pointer;' alt='Buscar Componente Curricular' title='Buscar Componente Curricular' onclick=\"$funcao\">"
+        );
+
+        $funcao = 'popCurso(this)';
+
+        $this->campoRotulo(
+            'curso',
+            'Curso',
+            "<img src='imagens/lupa_antiga.png' border='0' style='cursor:pointer;' alt='Buscar Cursos' title='Buscar Cursos' onclick=\"$funcao\">"
+        );
+
+        $this->campoTexto('matricula', 'Matricula', $this->matricula);
+
+        $this->campoOculto('cod_servidor_funcao', null);
+
+        $this->campoTabelaFim();
+
+        $horas = '00:00';
+        if ($this->total_horas_alocadas) {
+            $horas = $this->total_horas_alocadas . ':00';
+        }
+
+        if (mb_strtoupper($this->tipoacao) == 'EDITAR') {
+            $this->campoTextoInv(
+                'total_horas_alocadas_',
+                'Total de Horas Alocadadas',
+                $horas,
+                6,
+                20
+            );
+
+            $hora = explode(':', $this->total_horas_alocadas);
+            $this->total_horas_alocadas = $hora[0] + ($hora[1] / 60);
+            $this->campoOculto('total_horas_alocadas', $this->total_horas_alocadas);
+            $this->acao_enviar = 'acao2()';
+        }
+
+        if ($this->carga_horaria) {
+            $horas = (int) $this->carga_horaria;
+            $minutos = round(($this->carga_horaria - (int) $this->carga_horaria) * 60);
+            $hora_formatada = sprintf('%02d:%02d', $horas, $minutos);
+        }
+
+        $this->campoHora(
+            'carga_horaria',
+            'Carga Horária',
+            $hora_formatada,
+            true,
+            ' Número de horas deve ser maior que horas alocadas',
+            '',
+            false
+        );
+
+        $this->inputsHelper()->checkbox('multi_seriado', ['label' => 'Multisseriado', 'value' => $this->multi_seriado]);
+
+        // Dados do docente no Inep/Educacenso.
+        if ($this->docente) {
+            $docenteMapper = new Educacenso_Model_DocenteDataMapper;
+
+            $docenteInep = null;
+
+            try {
+                $docenteInep = $docenteMapper->find(['docente' => $this->cod_servidor]);
+            } catch (Exception) {
+            }
+        }
+
+        $opcoes = LegacySchoolingDegree::query()->orderBy('descricao')->pluck('descricao', 'idesco')->prepend('Selecione', '')->toArray();
+
+        $obj_permissoes = new clsPermissoes;
+        if ($obj_permissoes->permissao_cadastra(632, $this->pessoa_logada, 4)) {
+            $script = 'javascript:showExpansivelIframe(350, 135, \'educar_escolaridade_cad_pop.php\');';
+            $script = "<img id='img_deficiencia' style='display: \'\'' src='imagens/banco_imagens/escreve.gif' style='cursor:hand; cursor:pointer;' border='0' onclick=\"{$script}\">";
+        } else {
+            $script = null;
+        }
+
+        $this->campoLista('ref_idesco', 'Escolaridade', $opcoes, $this->ref_idesco, '', false, '', $script, false, $obrigarCamposCenso);
+
+        $options = [
+            'label' => 'Tipo de ensino médio cursado',
+            'resources' => SelectOptions::tiposEnsinoMedioCursados(),
+            'value' => $this->tipo_ensino_medio_cursado,
+            'required' => false,
+        ];
+
+        $this->inputsHelper()->select('tipo_ensino_medio_cursado', $options);
+
+        $helperOptions = ['objectName' => 'curso_formacao_continuada'];
+        $options = [
+            'label' => 'Outros cursos de formação continuada (Mínimo de 80 horas)',
+            'required' => $obrigarCamposCenso,
+            'options' => [
+                'values' => $this->curso_formacao_continuada,
+                'all_values' => FormacaoContinuada::getDescriptiveValues(),
+            ],
+        ];
+        $this->inputsHelper()->multipleSearchCustom('', $options, $helperOptions);
+
+        $opcoesComplementacaoPedagogica = ComponenteCurricular_Model_CodigoEducacenso::getDescriptiveValues();
+        /** Desconsidera opções */
+        unset($opcoesComplementacaoPedagogica[32]);
+        unset($opcoesComplementacaoPedagogica[99]);
+
+        $helperOptions = ['objectName' => 'complementacao_pedagogica'];
+        $options = [
+            'label' => 'Formação/Complementação pedagógica',
+            'required' => false,
+            'options' => [
+                'values' => $this->complementacao_pedagogica,
+                'all_values' => $opcoesComplementacaoPedagogica,
+            ],
+        ];
+        $this->inputsHelper()->multipleSearchCustom('', $options, $helperOptions);
+
+        $this->addGraduationsTable();
+
+        $this->addPosgraduateTable();
+
+        $scripts = ['/vendor/legacy/Cadastro/Assets/Javascripts/Servidor.js'];
+
+        Portabilis_View_Helper_Application::loadJavascript($this, $scripts);
+
+        $styles = [
+            '/vendor/legacy/Cadastro/Assets/Stylesheets/Servidor.css',
+            '/vendor/legacy/Portabilis/Assets/Stylesheets/Frontend/Resource.css',
+        ];
+
+        Portabilis_View_Helper_Application::loadStylesheet($this, $styles);
+
+        $script = <<<'JS'
+(function () {
+    $j('.ref_cod_funcao select').each(function () {
+        const $this = $j(this);
+        const value = $this.val();
+
+        if (value != '') {
+            $this.data('valor-original', value);
+        }
+    });
+})();
+JS;
+
+        Portabilis_View_Helper_Application::embedJavascript($this, $script);
+    }
+
+    public function Novo()
+    {
+        $this->cod_servidor = (int) $this->cod_servidor;
+        $this->ref_cod_instituicao = (int) $this->ref_cod_instituicao;
+
+        $timesep = explode(':', $this->carga_horaria);
+        $hour = (int) $timesep[0] + ((int) ($timesep[1] / 60));
+        $min = abs(((int) ($timesep[1] / 60)) - ($timesep[1] / 60)) . '<br>';
+        $this->carga_horaria = $hour + $min;
+
+        $this->curso_formacao_continuada = transformDBArrayInString($this->curso_formacao_continuada ?? []);
+
+        $escolaridade = $this->ref_idesco ? LegacySchoolingDegree::findOrFail($this->ref_idesco)->escolaridade : null;
+        $ensinoSuperior = $escolaridade == Escolaridade::EDUCACAO_SUPERIOR;
+        $this->complementacao_pedagogica = $ensinoSuperior ? transformDBArrayInString($this->complementacao_pedagogica) : null;
+
+        $obj_permissoes = new clsPermissoes;
+        $obj_permissoes->permissao_cadastra(635, $this->pessoa_logada, 7, 'educar_servidor_lst.php');
+
+        $servidorExiste = is_numeric($this->cod_servidor)
+            && is_numeric($this->ref_cod_instituicao)
+            && Employee::query()
+                ->whereEmployee($this->cod_servidor)
+                ->whereInstitution($this->ref_cod_instituicao)
+                ->exists();
+
+        if ($servidorExiste) {
+            $this->carga_horaria = str_replace(',', '.', $this->carga_horaria);
+
+            $editou = $this->editaServidor($this->ref_cod_instituicao, 1, $this->camposCenso());
+
+            if ($editou) {
+                $this->cadastraFuncoes();
+                $this->createOrUpdateInep();
+                $this->createOrUpdateDeficiencias();
+
+                $this->storeGraduations($this->cod_servidor);
+                $this->storePosgraduate($this->cod_servidor);
+
+                include 'educar_limpa_sessao_curso_disciplina_servidor.php';
+
+                $this->mensagem .= 'Cadastro efetuado com sucesso.<br>';
+                $this->simpleRedirect("educar_servidor_det.php?cod_servidor={$this->cod_servidor}&ref_cod_instituicao={$this->ref_cod_instituicao}");
+            }
+        } else {
+            $this->ref_cod_instituicao = (int) $this->ref_cod_instituicao;
+            $this->carga_horaria = str_replace(',', '.', $this->carga_horaria);
+
+            $cadastrou = $this->cadastraServidor($this->ref_cod_instituicao, $this->camposCenso());
+
+            if ($cadastrou) {
+                $this->cadastraFuncoes();
+                $this->createOrUpdateInep();
+                $this->createOrUpdateDeficiencias();
+
+                $this->storeGraduations($this->cod_servidor);
+                $this->storePosgraduate($this->cod_servidor);
+
+                include 'educar_limpa_sessao_curso_disciplina_servidor.php';
+
+                $employee = Employee::query()->find($this->cod_servidor);
+                EmployeeCreated::dispatch($employee);
+
+                $this->mensagem = 'Cadastro efetuado com sucesso.<br>';
+                $this->simpleRedirect("educar_servidor_det.php?cod_servidor={$this->cod_servidor}&ref_cod_instituicao={$this->ref_cod_instituicao}");
+            }
+        }
+        $this->mensagem = 'Cadastro não realizado.<br>';
+
+        return false;
+    }
+
+    public function Editar()
+    {
+        if (!$this->validaExclusaoFuncoes()) {
+            $this->mensagem = 'Edição não realizada. O servidor possui funções vinculadas a falta/atraso!';
+
+            return false;
+        }
+        $timesep = explode(':', $this->carga_horaria);
+        $hour = $timesep[0] + ((int) ($timesep[1] / 60));
+        $min = abs(((int) ($timesep[1] / 60)) - ($timesep[1] / 60)) . '<br>';
+        $this->carga_horaria = $hour + $min;
+
+        $this->curso_formacao_continuada = transformDBArrayInString($this->curso_formacao_continuada ?? []);
+
+        $escolaridade = $this->ref_idesco ? LegacySchoolingDegree::findOrFail($this->ref_idesco)->escolaridade : null;
+        $ensinoSuperior = $escolaridade == Escolaridade::EDUCACAO_SUPERIOR;
+        $this->complementacao_pedagogica = $ensinoSuperior ? transformDBArrayInString($this->complementacao_pedagogica) : null;
+
+        $obj_permissoes = new clsPermissoes;
+        $obj_permissoes->permissao_cadastra(635, $this->pessoa_logada, 7, 'educar_servidor_lst.php');
+
+        if ($this->ref_cod_instituicao == $this->ref_cod_instituicao_original) {
+            $this->carga_horaria = str_replace(',', '.', $this->carga_horaria);
+
+            $editou = $this->editaServidor($this->ref_cod_instituicao, 1, $this->camposCenso());
+
+            if ($editou) {
+                $this->cadastraFuncoes();
+                $this->createOrUpdateInep();
+                $this->createOrUpdateDeficiencias();
+
+                $this->storeGraduations($this->cod_servidor);
+                $this->storePosgraduate($this->cod_servidor);
+
+                include 'educar_limpa_sessao_curso_disciplina_servidor.php';
+
+                $this->mensagem = 'Edição efetuada com sucesso.<br>';
+                $this->simpleRedirect("educar_servidor_det.php?cod_servidor={$this->cod_servidor}&ref_cod_instituicao={$this->ref_cod_instituicao}");
+            }
+        } else {
+            $this->carga_horaria = str_replace(',', '.', $this->carga_horaria);
+            $obj_quadro_horario = new clsPmieducarQuadroHorarioHorarios(
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                $this->cod_servidor,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                1,
+                $this->ref_cod_instituicao
+            );
+
+            if ($obj_quadro_horario->detalhe()) {
+                $this->mensagem = 'Edição não realizada. O servidor está vinculado a um quadro de horários.<br>';
+
+                return false;
+            } else {
+                $obj_quadro_horario = new clsPmieducarQuadroHorarioHorarios(
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    $this->cod_servidor,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    1,
+                    null,
+                    $this->ref_cod_instituicao
+                );
+
+                if ($obj_quadro_horario->detalhe()) {
+                    $this->mensagem = 'Edição não realizada. O servidor está vinculado a um quadro de horários.<br>';
+
+                    return false;
+                } else {
+                    $this->carga_horaria = str_replace(',', '.', $this->carga_horaria);
+
+                    $editou = $this->editaServidor($this->ref_cod_instituicao_original, 0, $this->camposCenso());
+
+                    if ($editou) {
+                        $existeNaInstituicao = is_numeric($this->cod_servidor)
+                            && is_numeric($this->ref_cod_instituicao)
+                            && Employee::query()
+                                ->whereEmployee($this->cod_servidor)
+                                ->whereInstitution($this->ref_cod_instituicao)
+                                ->exists();
+
+                        $cadastrou = $existeNaInstituicao
+                            ? $this->editaServidor($this->ref_cod_instituicao, 1)
+                            : $this->cadastraServidor($this->ref_cod_instituicao);
+
+                        if ($cadastrou) {
+                            $this->cadastraFuncoes();
+                            $this->createOrUpdateInep();
+                            $this->createOrUpdateDeficiencias();
+
+                            $this->storeGraduations($this->cod_servidor);
+                            $this->storePosgraduate($this->cod_servidor);
+
+                            include 'educar_limpa_sessao_curso_disciplina_servidor.php';
+
+                            $this->mensagem = 'Edição efetuada com sucesso.<br>';
+                            $this->simpleRedirect("educar_servidor_det.php?cod_servidor={$this->cod_servidor}&ref_cod_instituicao={$this->ref_cod_instituicao}");
+                        }
+                    }
+                }
+            }
+        }
+        $this->mensagem = 'Edição não realizada.<br>';
+
+        return false;
+    }
+
+    public function Excluir()
+    {
+        $obj_permissoes = new clsPermissoes;
+        $obj_permissoes->permissao_excluir(635, $this->pessoa_logada, 7, 'educar_servidor_lst.php');
+
+        if (!$this->validaExclusaoFuncoes()) {
+            $this->mensagem = 'Exclusão não realizada. O servidor possui funções vinculadas a falta/atrasos!';
+
+            return false;
+        }
+
+        $obj_quadro_horario = new clsPmieducarQuadroHorarioHorarios(
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            $this->cod_servidor,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            1,
+            $this->ref_cod_instituicao
+        );
+
+        if ($obj_quadro_horario->detalhe()) {
+            $this->mensagem = 'Exclusão não realizada. O servidor está vinculado a um quadro de horários.<br>';
+
+            return false;
+        }
+
+        if (!is_numeric($this->cod_servidor) || !is_numeric($this->ref_cod_instituicao_original)) {
+            $this->mensagem = 'Exclusão não realizada.<br>';
+
+            return false;
+        }
+
+        DB::beginTransaction();
+
+        Employee::query()
+            ->whereEmployee($this->cod_servidor)
+            ->whereInstitution($this->ref_cod_instituicao_original)
+            ->update([
+                'ativo' => 0,
+                'data_exclusao' => now(),
+            ]);
+
+        $this->excluiDisciplinas(null);
+        $this->excluiFaltaAtraso();
+        $this->excluiFuncoes();
+        DB::commit();
+
+        $this->mensagem = 'Exclusão efetuada com sucesso.<br>';
+        $this->simpleRedirect('educar_servidor_lst.php');
+    }
+
+    private function camposCenso(): array
+    {
+        return [
+            'tipo_ensino_medio_cursado' => $this->tipo_ensino_medio_cursado,
+            'curso_formacao_continuada' => $this->curso_formacao_continuada,
+            'complementacao_pedagogica' => $this->complementacao_pedagogica,
+            'multi_seriado' => !is_null($this->multi_seriado),
+        ];
+    }
+
+    private function editaServidor($instituicao, $ativo, array $censo = []): bool
+    {
+        if (!is_numeric($this->cod_servidor) || !is_numeric($instituicao)) {
+            return false;
+        }
+
+        $valores = [
+            'ref_idesco' => is_numeric($this->ref_idesco) ? $this->ref_idesco : null,
+            'data_exclusao' => now(),
+            'ativo' => $ativo,
+            'tipo_ensino_medio_cursado' => is_numeric($censo['tipo_ensino_medio_cursado'] ?? null) ? $censo['tipo_ensino_medio_cursado'] : null,
+            'complementacao_pedagogica' => is_string($censo['complementacao_pedagogica'] ?? null) ? $censo['complementacao_pedagogica'] : null,
+            'multi_seriado' => dbBool($censo['multi_seriado'] ?? null),
+        ];
+
+        if (is_numeric($this->carga_horaria)) {
+            $valores['carga_horaria'] = $this->carga_horaria;
+        }
+
+        if (is_string($censo['curso_formacao_continuada'] ?? null)) {
+            $valores['curso_formacao_continuada'] = $censo['curso_formacao_continuada'];
+        }
+
+        Employee::query()
+            ->whereEmployee($this->cod_servidor)
+            ->whereInstitution($instituicao)
+            ->update($valores);
+
+        return true;
+    }
+
+    private function cadastraServidor($instituicao, array $censo = []): bool
+    {
+        if (!is_numeric($this->cod_servidor) || !is_numeric($this->carga_horaria) || !is_numeric($instituicao)) {
+            return false;
+        }
+
+        $valores = [
+            'cod_servidor' => $this->cod_servidor,
+            'carga_horaria' => $this->carga_horaria,
+            'data_cadastro' => now(),
+            'ativo' => 1,
+            'ref_cod_instituicao' => $instituicao,
+            'multi_seriado' => dbBool($censo['multi_seriado'] ?? null),
+        ];
+
+        if (is_numeric($this->ref_idesco)) {
+            $valores['ref_idesco'] = $this->ref_idesco;
+        }
+
+        if (is_numeric($censo['tipo_ensino_medio_cursado'] ?? null)) {
+            $valores['tipo_ensino_medio_cursado'] = $censo['tipo_ensino_medio_cursado'];
+        }
+
+        if (is_string($censo['curso_formacao_continuada'] ?? null)) {
+            $valores['curso_formacao_continuada'] = $censo['curso_formacao_continuada'];
+        }
+
+        if (is_string($censo['complementacao_pedagogica'] ?? null)) {
+            $valores['complementacao_pedagogica'] = $censo['complementacao_pedagogica'];
+        }
+
+        Employee::query()->insert($valores);
+
+        return true;
+    }
+
+    public function validaExclusaoFuncoes()
+    {
+        $listaFuncoes = collect($this->ref_cod_funcao)->map(function ($funcao, $k) {
+            return $this->cod_servidor_funcao[$k] ?: null;
+        })->filter(function ($item) {
+            return !is_null($item);
+        });
+
+        $funcoesRemovidas = LegacyEmployeeRole::query()
+            ->where('ref_cod_servidor', $this->cod_servidor)
+            ->when($this->tipoacao === 'Editar', fn ($q) => $q->whereNotIn('cod_servidor_funcao', $listaFuncoes))
+            ->pluck('cod_servidor_funcao')
+            ->toArray();
+
+        return LegacyAbsenceDelay::query()
+            ->whereEmployee($this->cod_servidor)
+            ->whereIn('ref_cod_servidor_funcao', $funcoesRemovidas)
+            ->doesntExist();
+    }
+
+    public function cadastraFuncoes()
+    {
+        $funcoes = Session::get("servant:{$this->cod_servidor}", []);
+        $existe_funcao_professor = false;
+
+        $listFuncoesCadastradas = [];
+
+        if ($this->ref_cod_funcao) {
+            foreach ($this->ref_cod_funcao as $k => $funcao) {
+                [$funcao, $professor] = explode('-', $funcao);
+
+                if ($professor) {
+                    $existe_funcao_professor = true;
+                }
+
+                $cod_servidor_funcao = $this->cod_servidor_funcao[$k];
+
+                if (is_numeric($cod_servidor_funcao) && LegacyEmployeeRole::query()->whereKey($cod_servidor_funcao)->exists()) {
+                    $this->atualizaFuncao($cod_servidor_funcao, $funcao, $this->matricula[$k]);
+                } else {
+                    $cod_servidor_funcao = $this->cadastraFuncao($funcao, $this->matricula[$k]);
+
+                    $funcoes[$cod_servidor_funcao] = $funcoes['new_' . $k];
+                    unset($funcoes['new_' . $k]);
+                }
+
+                if (empty($cod_servidor_funcao)) {
+                    $cod_servidor_funcao = LegacyEmployeeRole::query()
+                        ->whereInstitution($this->ref_cod_instituicao)
+                        ->whereEmployee($this->cod_servidor)
+                        ->whereRole($funcao)
+                        ->value('cod_servidor_funcao');
+                }
+
+                $listFuncoesCadastradas[] = $cod_servidor_funcao;
+            }
+        }
+        if (!$existe_funcao_professor) {
+            $this->excluiDisciplinas(array_keys($funcoes));
+            $this->excluiCursos();
+        }
+
+        $cursos_servidor = [];
+        $employee = Employee::find($this->cod_servidor, ['cod_servidor']);
+
+        if ($existe_funcao_professor) {
+            $this->excluiDisciplinas(array_keys($funcoes));
+
+            foreach ($funcoes as $funcao => $cursos) {
+                foreach ($cursos as $curso => $disciplinas) {
+                    if (empty($curso)) {
+                        continue;
+                    }
+                    $cursos_servidor[] = $curso;
+
+                    foreach ($disciplinas as $disciplina) {
+                        $exists = $employee->disciplines()
+                            ->where('id', $disciplina)
+                            ->wherePivot('ref_ref_cod_instituicao', $this->ref_cod_instituicao)
+                            ->wherePivot('ref_cod_funcao', $funcao)
+                            ->wherePivot('ref_cod_curso', $curso)
+                            ->exists();
+                        if (!$exists) {
+                            $employee->disciplines()->attach($disciplina, [
+                                'ref_ref_cod_instituicao' => $this->ref_cod_instituicao,
+                                'ref_cod_funcao' => $funcao,
+                                'ref_cod_curso' => $curso,
+                            ]);
+                        }
+                    }
+                }
+
+                $cursos_servidor = array_unique($cursos_servidor);
+            }
+
+            if ($cursos_servidor) {
+                $this->excluiCursos();
+
+                foreach ($cursos_servidor as $curso) {
+                    $exists = $employee->courses()
+                        ->where('cod_curso', $curso)
+                        ->wherePivot('ref_ref_cod_instituicao', $this->ref_cod_instituicao)
+                        ->exists();
+                    if (!$exists) {
+                        $employee->courses()->attach($curso, [
+                            'ref_ref_cod_instituicao' => $this->ref_cod_instituicao,
+                        ]);
+                    }
+                }
+            }
+        }
+        $funcoesRemovidas = $funcoes;
+        foreach ($listFuncoesCadastradas as $funcao) {
+            unset($funcoesRemovidas[$funcao]);
+        }
+        if (count($funcoesRemovidas) > 0) {
+            $this->excluiDisciplinas(array_keys($funcoesRemovidas));
+        }
+        $this->excluiFuncoesRemovidas($listFuncoesCadastradas);
+    }
+
+    public function excluiFuncoes()
+    {
+        $this->deletaFuncoesDoServidor();
+    }
+
+    /**
+     * Remove fisicamente as faltas/atrasos do servidor.
+     *
+     * A remoção precisa ser física e abranger os inativos, pois logo em seguida
+     * a exclusão das funções faz hard delete em servidor_funcao. Registros de
+     * falta_atraso apenas marcados como inativos violariam a chave estrangeira.
+     */
+    public function excluiFaltaAtraso()
+    {
+        LegacyAbsenceDelay::query()
+            ->withTrashed()
+            ->where('ref_cod_servidor', $this->cod_servidor)
+            ->forceDelete();
+    }
+
+    /**
+     * Remove a referência de função em registros inativos de falta_atraso.
+     *
+     * A validação (validaExclusaoFuncoes) só verifica registros ativos (ativo = 1),
+     * mas a FK no banco verifica todos. Sem isso, o DELETE em servidor_funcao
+     * falha com FK violation por causa dos registros inativos.
+     */
+    public function limpaFuncaoFaltaAtrasoInativos($funcoesMantidasIds)
+    {
+        LegacyAbsenceDelay::query()
+            ->onlyTrashed()
+            ->whereEmployee($this->cod_servidor)
+            ->whereNotNull('ref_cod_servidor_funcao')
+            ->when(!empty($funcoesMantidasIds), fn ($q) => $q->whereNotIn('ref_cod_servidor_funcao', $funcoesMantidasIds))
+            ->update(['ref_cod_servidor_funcao' => null]);
+    }
+
+    public function excluiFuncoesRemovidas($funcoes)
+    {
+        $this->limpaFuncaoFaltaAtrasoInativos($funcoes);
+
+        if (is_array($funcoes)) {
+            $this->deletaFuncoesDoServidor($funcoes);
+        }
+    }
+
+    private function deletaFuncoesDoServidor(?array $funcoesMantidasIds = null)
+    {
+        if (!is_numeric($this->ref_cod_instituicao) || !is_numeric($this->cod_servidor)) {
+            return;
+        }
+
+        LegacyEmployeeRole::query()
+            ->whereInstitution($this->ref_cod_instituicao)
+            ->whereEmployee($this->cod_servidor)
+            ->when(!empty($funcoesMantidasIds), fn ($q) => $q->whereNotIn('cod_servidor_funcao', $funcoesMantidasIds))
+            ->delete();
+    }
+
+    public function atualizaFuncao($cod_servidor_funcao, $funcao, $matricula)
+    {
+        $dados = ['matricula' => $matricula ?: null];
+
+        if (is_numeric($funcao)) {
+            $dados['ref_cod_funcao'] = $funcao;
+        }
+
+        LegacyEmployeeRole::query()->find($cod_servidor_funcao)?->update($dados);
+    }
+
+    public function cadastraFuncao($funcao, $matricula)
+    {
+        if (!is_numeric($this->ref_cod_instituicao) || !is_numeric($this->cod_servidor) || !is_numeric($funcao)) {
+            return false;
+        }
+
+        return LegacyEmployeeRole::query()->create([
+            'ref_ref_cod_instituicao' => $this->ref_cod_instituicao,
+            'ref_cod_servidor' => $this->cod_servidor,
+            'ref_cod_funcao' => $funcao,
+            'matricula' => $matricula ?: null,
+        ])->cod_servidor_funcao;
+    }
+
+    public function excluiDisciplinas($funcao)
+    {
+        if (is_numeric($this->ref_cod_instituicao) &&
+            is_numeric($this->cod_servidor)) {
+            $employee = Employee::query()->find($this->cod_servidor, ['cod_servidor']);
+            $filter = null;
+            if (is_array($funcao) && count($funcao) && $funcao[0] !== '') {
+                $filter = array_filter($funcao, fn ($item) => ctype_digit((string) $item));
+            }
+            $employee->disciplines()
+                ->wherePivot('ref_ref_cod_instituicao', $this->ref_cod_instituicao)
+                ->when($filter, fn ($q) => $q->wherePivotIn('ref_cod_funcao', $filter))
+                ->detach();
+        }
+    }
+
+    public function excluiCursos()
+    {
+        if (is_numeric($this->ref_cod_instituicao) && is_numeric($this->cod_servidor)) {
+            $employee = Employee::query()->find($this->cod_servidor, ['cod_servidor']);
+            $employee->courses()
+                ->wherePivot('ref_ref_cod_instituicao', $this->ref_cod_instituicao)
+                ->detach();
+        }
+    }
+
+    protected function createOrUpdateDeficiencias()
+    {
+        if (!is_numeric($this->cod_servidor)) {
+            return;
+        }
+
+        $individual = LegacyIndividual::find($this->cod_servidor, ['idpes']);
+        if (!$individual) {
+            return;
+        }
+
+        $old = $individual->deficiency()->pluck('ref_cod_deficiencia')->toArray();
+        $news = array_values(array_filter((array) $this->getRequest()->deficiencias, 'is_numeric'));
+        $individual->deficiency()->sync($news);
+
+        $diff = array_merge(array_diff($old, $news), array_diff($news, $old));
+        if (!empty($diff)) {
+            LegacyDeficiency::whereIn('cod_deficiencia', $diff)->update(['updated_at' => now()]);
+        }
+    }
+
+    protected function createOrUpdateInep()
+    {
+        Portabilis_Utils_Database::fetchPreparedQuery('DELETE FROM modules.educacenso_cod_docente WHERE cod_servidor = $1', ['params' => [$this->cod_servidor]], false);
+        if ($this->cod_docente_inep) {
+            $sql = 'INSERT INTO modules.educacenso_cod_docente (cod_servidor,cod_docente_inep, fonte, created_at)
+                                                  VALUES ($1, $2,\'U\', \'NOW()\')';
+            Portabilis_Utils_Database::fetchPreparedQuery($sql, ['params' => [$this->cod_servidor, $this->cod_docente_inep]]);
+        }
+    }
+
+    protected function addGraduationsTable()
+    {
+        $graduations = $this->fillEmployeeGraduations($this->cod_servidor);
+
+        $rows = $this->getGraduateTableRows($graduations);
+
+        $this->campoTabelaInicio(
+            'graduations',
+            'Curso(s) superior(es) concluído(s)',
+            [
+                'Curso',
+                'Ano de conclusão',
+                'Instituição de Educação Superior',
+            ],
+            $rows
+        );
+
+        $this->inputsHelper()->simpleSearchCursoSuperior(null, ['required' => false], ['objectName' => 'employee_course']);
+        $this->campoTexto('employee_completion_year', null, null, null, 4);
+        $this->inputsHelper()->simpleSearchIes(null, ['required' => false], ['objectName' => 'employee_college']);
+
+        $this->campoTabelaFim();
+    }
+
+    protected function addPosgraduateTable()
+    {
+        $posgraduate = EmployeePosgraduate::query()
+            ->where('employee_id', $this->cod_servidor)
+            ->get()
+            ->map(function ($posgraduate) {
+                return [
+                    $posgraduate->type_id,
+                    $posgraduate->area_id,
+                    $posgraduate->completion_year,
+                    $posgraduate->id,
+                ];
+            })
+            ->toArray();
+
+        $types = [null => 'Selecione uma opção'] + PosGraduacao::getDescriptiveValues();
+        $areas = [null => 'Selecione uma opção'] + AreaPosGraduacao::getDescriptiveValues();
+
+        $this->campoTabelaInicio(
+            'posgraduate',
+            'Pós-graduações concluídas',
+            [
+                'Tipo de pós graduação',
+                'Área',
+                'Ano de conclusão',
+            ],
+            $posgraduate
+        );
+
+        $this->inputsHelper()->select('posgraduate_type_id', ['resources' => $types, 'required' => false]);
+        $this->inputsHelper()->select('posgraduate_area_id', ['resources' => $areas, 'required' => false]);
+        $this->campoTexto('posgraduate_completion_year', null, null, null, 4);
+
+        $this->campoTabelaFim();
+    }
+
+    /**
+     * @return array|mixed
+     */
+    protected function fillEmployeeGraduations($employeeId)
+    {
+        $graduations = [];
+        if (old('course_id')) {
+            foreach (old('course_id') as $key => $value) {
+                $oldInputGraduation = new EmployeeGraduation;
+                $oldInputGraduation->course = old('employee_course')[$key];
+                $oldInputGraduation->course_id = old('employee_course_id')[$key];
+                $oldInputGraduation->completion_year = old('employee_completion_year')[$key];
+                $oldInputGraduation->college = old('employee_college')[$key];
+                $oldInputGraduation->college_id = old('employee_college_id')[$key];
+                $graduations[] = $oldInputGraduation;
+            }
+
+            return $graduations;
+        }
+
+        /** @var EmployeeGraduationService $employeeGraduationService */
+        $employeeGraduationService = app(EmployeeGraduationService::class);
+        $graduations = $employeeGraduationService->getEmployeeGraduations($employeeId);
+
+        foreach ($graduations as $graduation) {
+            $graduation->course = $this->getCourseName($graduation->course_id);
+            $graduation->college = $this->getCollegeName($graduation->college_id);
+        }
+
+        return $graduations;
+    }
+
+    protected function getGraduateTableRows($graduations)
+    {
+        $rows = [];
+
+        foreach ($graduations as $graduation) {
+            $rows[] = [
+                $graduation->course,
+                $graduation->completion_year,
+                $graduation->college,
+                $graduation->course_id,
+                $graduation->college_id,
+            ];
+        }
+
+        return $rows;
+    }
+
+    protected function storeGraduations($employeeId)
+    {
+        /** @var EmployeeGraduationService $employeeGraduationService */
+        $employeeGraduationService = app(EmployeeGraduationService::class);
+
+        $employeeGraduationService->deleteAll($employeeId);
+
+        if (empty($this->ref_idesco)) {
+            return true;
+        }
+
+        $escolaridade = $this->ref_idesco ? LegacySchoolingDegree::findOrFail($this->ref_idesco)->escolaridade : null;
+
+        if ($escolaridade != Escolaridade::EDUCACAO_SUPERIOR) {
+            return true;
+        }
+
+        foreach ($this->employee_course_id as $key => $courseId) {
+            if (empty($courseId)) {
+                continue;
+            }
+
+            $valueObject = new EmployeeGraduationValueObject;
+            $valueObject->employeeId = $employeeId;
+            $valueObject->courseId = $this->employee_course_id[$key];
+            $valueObject->completionYear = $this->employee_completion_year[$key];
+            $valueObject->collegeId = $this->employee_college_id[$key];
+            $employeeGraduationService->storeGraduation($valueObject);
+        }
+    }
+
+    protected function storePosgraduate($employeeId)
+    {
+        /** @var EmployeePosgraduateService $employeePosgraduateService */
+        $employeePosgraduateService = app(EmployeePosgraduateService::class);
+
+        $employeePosgraduateService->deleteAll($employeeId);
+
+        if (empty($this->ref_idesco)) {
+            return true;
+        }
+
+        $escolaridade = $this->ref_idesco ? LegacySchoolingDegree::findOrFail($this->ref_idesco)->escolaridade : null;
+
+        if ($escolaridade != Escolaridade::EDUCACAO_SUPERIOR) {
+            return true;
+        }
+
+        foreach ($this->posgraduate_type_id as $key => $typeId) {
+            if (empty($typeId)) {
+                continue;
+            }
+
+            $valueObject = new EmployeePosgraduateValueObject;
+            $valueObject->employeeId = $employeeId;
+            $valueObject->entityId = $this->ref_cod_instituicao;
+            $valueObject->typeId = $this->posgraduate_type_id[$key] ?: null;
+            $valueObject->areaId = $this->posgraduate_area_id[$key] ?: null;
+            $valueObject->completionYear = $this->posgraduate_completion_year[$key] ?: null;
+            $employeePosgraduateService->storePosgraduate($valueObject);
+        }
+    }
+
+    protected function getCourseName($courseId)
+    {
+        $academicLevels = [
+            1 => 'Tecnológico',
+            2 => 'Licenciatura',
+            3 => 'Bacharelado',
+        ];
+
+        $course = DB::table('modules.educacenso_curso_superior')->where('id', $courseId)->get(['nome', 'curso_id', 'grau_academico'])->first();
+
+        return $course->curso_id . ' - ' . $course->nome . ' / ' . ($academicLevels[$course->grau_academico] ?? '');
+    }
+
+    protected function getCollegeName($collegeId)
+    {
+        $college = DB::table('modules.educacenso_ies')->where('id', $collegeId)->get(['nome', 'ies_id'])->first();
+
+        return $college->ies_id . ' - ' . $college->nome;
+    }
+
+    public function makeExtra()
+    {
+        return file_get_contents(__DIR__ . '/scripts/extra/educar-servidor-cad.js');
+    }
+
+    public function Formular()
+    {
+        $this->title = 'Servidores - Servidor';
+        $this->processoAp = 635;
+    }
+};

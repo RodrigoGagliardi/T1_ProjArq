@@ -1,0 +1,25 @@
+name: t1-ieducar-moodle
+
+include:
+  - i-educar/docker-compose.yml
+  - moodle/docker-compose.yml
+
+services:
+
+  integration:
+    build:
+      context: ./integration
+    container_name: integration-app
+    restart: unless-stopped
+    depends_on:
+      - nginx
+      - moodle
+    env_file:
+      - ./integration/.env
+    volumes:
+      - integration_data:/app/data
+    ports:
+      - ${DOCKER_INTEGRATION_PORT:-3000}:3000
+
+volumes:
+  integration_data:

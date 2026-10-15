@@ -1,0 +1,58 @@
+services:
+
+  postgresql:
+    image: bitnamilegacy/postgresql:latest
+    container_name: moodle-postgresql
+    restart: unless-stopped
+    environment:
+      POSTGRESQL_POSTGRES_PASSWORD: ${POSTGRESQL_POSTGRES_PASSWORD:-moodle_root}
+      POSTGRESQL_DATABASE: ${MOODLE_DATABASE_NAME:-bitnami_moodle}
+      POSTGRESQL_USERNAME: ${MOODLE_DATABASE_USER:-bn_moodle}
+      POSTGRESQL_PASSWORD: ${MOODLE_DATABASE_PASSWORD:-moodle_password}
+    volumes:
+      - postgresql_data:/bitnami/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${MOODLE_DATABASE_USER:-bn_moodle}", "-d", "${MOODLE_DATABASE_NAME:-bitnami_moodle}"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    ports:
+      - ${DOCKER_POSTGRESQL_PORT:-5432}:5432
+
+  moodle:
+    image: bitnamilegacy/moodle:latest
+    container_name: moodle-app
+    restart: unless-stopped
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    environment:
+      MOODLE_DATABASE_TYPE: pgsql
+      MOODLE_DATABASE_HOST: postgresql
+      MOODLE_DATABASE_PORT_NUMBER: 5432
+      MOODLE_DATABASE_NAME: ${MOODLE_DATABASE_NAME:-bitnami_moodle}
+      MOODLE_DATABASE_USER: ${MOODLE_DATABASE_USER:-bn_moodle}
+      MOODLE_DATABASE_PASSWORD: ${MOODLE_DATABASE_PASSWORD:-moodle_password}
+      MOODLE_USERNAME: ${MOODLE_USERNAME:-admin}
+      MOODLE_PASSWORD: ${MOODLE_PASSWORD:-moodle_admin_pw}
+      MOODLE_EMAIL: ${MOODLE_EMAIL:-admin@example.com}
+      MOODLE_SITE_NAME: ${MOODLE_SITE_NAME:-Moodle Legacy}
+      MOODLE_HOST: ${MOODLE_HOST:-localhost}
+      MOODLE_REVERSEPROXY: ${MOODLE_REVERSEPROXY:-no}
+      MOODLE_SSLPROXY: ${MOODLE_SSLPROXY:-no}
+      MOODLE_SMTP_HOST: ${MOODLE_SMTP_HOST:-}
+      MOODLE_SMTP_PORT_NUMBER: ${MOODLE_SMTP_PORT_NUMBER:-587}
+      MOODLE_SMTP_USER: ${MOODLE_SMTP_USER:-}
+      MOODLE_SMTP_PASSWORD: ${MOODLE_SMTP_PASSWORD:-}
+      MOODLE_SMTP_PROTOCOL: ${MOODLE_SMTP_PROTOCOL:-tls}
+    volumes:
+      - moodle_data:/bitnami/moodle
+      - moodledata_data:/bitnami/moodledata
+    ports:
+      - ${DOCKER_MOODLE_PORT:-8080}:8080
+      - ${DOCKER_MOODLE_SSL_PORT:-8443}:8443
+
+volumes:
+  postgresql_data:
+  moodle_data:
+  moodledata_data:
