@@ -51,6 +51,13 @@ Moodle. Idempotência garantida por uma tabela própria (SQLite) de mapeamento d
    docker compose exec php php artisan db:seed
    ```
 
+   Opcional, mas recomendado para ter dados reais pra testar a integração (turmas e matrículas
+   de demonstração):
+
+   ```bash
+   docker compose exec php php artisan db:seed --class=DemoSeeder
+   ```
+
 4. Gere o token de serviço do iEducar (usado pela integração para ler turmas/matrículas):
 
    ```bash
@@ -108,6 +115,30 @@ npm test
 | iEducar | http://localhost | admin / 123456789 |
 | Moodle | http://localhost:8080 | admin / moodle_admin_pw |
 | Integração (API/status) | http://localhost:3000 | — |
+
+## Solução de problemas
+
+- **`composer new-install` para no passo `set-permissions` com erro de `chmod`**: acontece em
+  bind mounts do Windows (Docker Desktop), que não suportam `chmod`. A instalação já fez a parte
+  importante até ali; rode manualmente o que faltou:
+  ```bash
+  docker compose exec php php artisan key:generate --ansi
+  docker compose exec php php artisan storage:link --ansi
+  docker compose exec php php artisan migrate --force --ansi
+  ```
+- **`ieducar-horizon` reiniciando em loop** (`env: can't execute 'php'`): problema pré-existente
+  da imagem do iEducar, não usado por esta integração (que só fala com a API HTTP). Pode ignorar
+  ou rodar `docker compose stop horizon`.
+- **Login do Moodle dá "File not found"**: o `wwwroot` do Moodle foi gerado sem a porta (bug do
+  `MOODLE_HOST` sem `:8080` no `.env` usado na primeira instalação). Já corrigido no
+  `.env.example` deste repositório; se acontecer de novo (por exemplo, reinstalando o Moodle do
+  zero com um `.env` antigo), edite `/bitnami/moodle/config.php` dentro do container trocando
+  `'http://' . 'localhost'` por `'http://' . 'localhost:8080'` e reinicie o serviço `moodle`.
+- **`GET /api/school-class`/`registration` vindo vazio**: o seed padrão só cria dados de
+  referência, não turmas/matrículas. Rode o `DemoSeeder` (passo 3 acima).
+- **`?active=1` trava (timeout) em `GET /api/registration`**: bug de performance pré-existente
+  nesta versão do iEducar, fora do escopo desta integração. Por isso `integration/src/adapters/ieducarClient.ts`
+  filtra matrícula só por `year_eq` e verifica o campo `ativo` no lado do cliente.
 
 ## Relatório
 
