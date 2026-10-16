@@ -4,6 +4,8 @@ Entrega 2 da disciplina: implementação de uma aplicação de integração (mon
 Node.js/TypeScript) entre o **iEducar** (gestão escolar) e o **Moodle** (AVA), orquestrada por um
 único Docker Compose.
 
+> Manual passo a passo e detalhado para instalar em Linux: [docs/MANUAL_LINUX.md](docs/MANUAL_LINUX.md).
+
 ```
 T1_projarq/
 ├── docker-compose.yml   # ponto de entrada único (usa `include:` para juntar os 3 projetos)
