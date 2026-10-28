@@ -34,6 +34,12 @@ export interface MoodleClientOptions {
   baseUrl: string;
   token: string;
   logger: Logger;
+  /**
+   * Host enviado no cabecalho HTTP. O Moodle redireciona (303) qualquer requisicao cujo host
+   * difira do seu wwwroot, entao, dentro da rede do Docker, chamamos `moodle:8080` mas nos
+   * apresentamos como o host publico (ex. `localhost:8080`).
+   */
+  hostHeader?: string;
 }
 
 /**
@@ -51,6 +57,7 @@ export class MoodleClient {
     this.http = axios.create({
       baseURL: opts.baseUrl,
       timeout: 15_000,
+      headers: opts.hostHeader ? { Host: opts.hostHeader } : undefined,
     });
   }
 

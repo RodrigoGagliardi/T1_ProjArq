@@ -4,6 +4,7 @@ const envSchema = z.object({
   IEDUCAR_BASE_URL: z.string().url(),
   IEDUCAR_API_TOKEN: z.string().min(1, "IEDUCAR_API_TOKEN é obrigatório (gere com: php artisan admin:token)"),
   MOODLE_BASE_URL: z.string().url(),
+  MOODLE_HOST_HEADER: z.string().min(1).optional(),
   MOODLE_WS_TOKEN: z.string().min(1, "MOODLE_WS_TOKEN é obrigatório (gere em Administração do site > Web services > Gerenciar tokens)"),
   MOODLE_CATEGORY_ID: z.coerce.number().int().positive().default(1),
   ACTIVE_YEAR: z.coerce.number().int().default(new Date().getFullYear()),

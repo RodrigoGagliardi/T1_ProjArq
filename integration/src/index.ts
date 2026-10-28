@@ -19,7 +19,12 @@ const enrollmentRepo = new EnrollmentRepo(db);
 const syncRunRepo = new SyncRunRepo(db);
 
 const ieducar = new IEducarClient({ baseUrl: config.IEDUCAR_BASE_URL, token: config.IEDUCAR_API_TOKEN, logger });
-const moodle = new MoodleClient({ baseUrl: config.MOODLE_BASE_URL, token: config.MOODLE_WS_TOKEN, logger });
+const moodle = new MoodleClient({
+  baseUrl: config.MOODLE_BASE_URL,
+  token: config.MOODLE_WS_TOKEN,
+  hostHeader: config.MOODLE_HOST_HEADER,
+  logger,
+});
 
 const syncContext: SyncContext = {
   ieducar,
